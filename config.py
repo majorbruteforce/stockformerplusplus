@@ -25,7 +25,7 @@ def set_seed(seed: int = SEED):
 set_seed(SEED)
 
 API_KEY = "A4G119PMOFNFAAVC"
-SYMBOL = "AAPL"
+SYMBOL = "NVDA"
 
 DATA_CONFIG = {
     "api_key": API_KEY,
