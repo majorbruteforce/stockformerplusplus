@@ -1,4 +1,4 @@
-# Stockformer+
+# Stockformer++
 
 > **Note:** This project is currently in progress. Experimentation, validation, and documentation are ongoing. Results presented herein are preliminary and subject to change.
 
