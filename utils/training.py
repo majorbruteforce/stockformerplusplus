@@ -148,7 +148,7 @@ def train_model(
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
     scheduler = ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5, verbose=verbose
+        optimizer, mode="min", factor=0.5, patience=5
     )
 
     best_val_loss = float("inf")
