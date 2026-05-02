@@ -10,29 +10,24 @@ from typing import Tuple
 
 
 class TimeSeriesDataset(Dataset):
-    """
-    PyTorch Dataset for sliding window time series data.
-
-    Creates sequences of length seq_len from features,
-    with target being the log return at the specified horizon.
-    """
-
     def __init__(
         self,
         features: np.ndarray,
         targets: np.ndarray,
+        market_features: np.ndarray = None, # <-- NEW
         seq_len: int = 60,
         include_time: bool = False,
     ):
-        """
-        Args:
-            features: Feature array of shape (n_samples, n_features)
-            targets: Target array of shape (n_samples,)
-            seq_len: Length of input sequence
-            include_time: If True, include normalized time indices
-        """
         self.features = torch.FloatTensor(features.astype(np.float32))
         self.targets = torch.FloatTensor(targets.astype(np.float32))
+        
+        # --- NEW: Initialize market features ---
+        if market_features is not None:
+            self.market_features = torch.FloatTensor(market_features.astype(np.float32))
+        else:
+            self.market_features = None
+        # ---------------------------------------
+        
         self.seq_len = seq_len
         self.include_time = include_time
 
@@ -45,14 +40,7 @@ class TimeSeriesDataset(Dataset):
     def __len__(self) -> int:
         return self.n_samples
 
-    def __getitem__(self, idx: int) -> Tuple[torch.Tensor, torch.Tensor]:
-        """
-        Get a single sequence and its target.
-
-        Returns:
-            X: Input sequence of shape (seq_len, n_features)
-            y: Target value
-        """
+    def __getitem__(self, idx: int):
         X = self.features[idx : idx + self.seq_len]
         y = self.targets[idx + self.seq_len]
 
@@ -62,36 +50,28 @@ class TimeSeriesDataset(Dataset):
             ).unsqueeze(1) / float(self.__len__())
             X = torch.cat([X, time_indices], dim=1)
 
+        # --- NEW: Yield market status vector ---
+        if self.market_features is not None:
+            m = self.market_features[idx + self.seq_len - 1]
+            return X, m, y
+        # ---------------------------------------
         return X, y
-
 
 def create_sequences(
     features: np.ndarray,
     targets: np.ndarray,
+    market_features: np.ndarray = None, # <-- NEW
     seq_len: int = 60,
     batch_size: int = 32,
     shuffle: bool = False,
     include_time: bool = False,
 ) -> Tuple[TimeSeriesDataset, torch.Tensor, torch.Tensor]:
-    """
-    Create sliding window dataset and extract all targets.
+    
+    # Pass market_features into the dataset
+    dataset = TimeSeriesDataset(features, targets, market_features, seq_len, include_time)
 
-    Args:
-        features: Feature array
-        targets: Target array
-        seq_len: Sequence length
-        batch_size: Batch size (for tensor creation)
-        shuffle: Whether to shuffle (for train set)
-        include_time: Include time indices
-
-    Returns:
-        dataset: PyTorch Dataset
-        all_targets: All targets as tensor (for evaluation)
-        dates: Date indices for alignment
-    """
-    dataset = TimeSeriesDataset(features, targets, seq_len, include_time)
-
-    all_targets = torch.stack([dataset[i][1] for i in range(len(dataset))])
+    # Note: dataset[i] now might return 2 or 3 items. Target is always the last item.
+    all_targets = torch.stack([dataset[i][-1] for i in range(len(dataset))])
 
     return dataset, all_targets, None
 

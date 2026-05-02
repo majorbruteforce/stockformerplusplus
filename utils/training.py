@@ -13,6 +13,50 @@ from tqdm import tqdm
 from config import TRAIN_CONFIG, DEVICE
 
 
+# class StockTanhLoss(nn.Module):
+#     """
+#     Profit-driven loss function based on the Stock Tanh algorithm.
+#     It simulates trading returns where the model's output (passed through tanh)
+#     determines the percentage of the portfolio to invest.
+#     """
+#     def __init__(self):
+#         super().__init__()
+
+#     def forward(self, y_pred: torch.Tensor, y_true_returns: torch.Tensor) -> torch.Tensor:
+#         investment_ratio = torch.tanh(y_pred)
+#         simulated_returns = investment_ratio * y_true_returns
+#         # Maximize returns by minimizing the negative mean
+#         return -torch.mean(simulated_returns)
+
+class SharpeLoss(nn.Module):
+    """
+    Optimizes directly for the Sharpe Ratio.
+    Forces the model to maximize returns while minimizing volatility, 
+    preventing 'perma-bull' mode collapse on assets with upward drift.
+    """
+    def __init__(self, epsilon=1e-6):
+        super().__init__()
+        # Epsilon prevents division by zero
+        self.epsilon = epsilon
+
+    def forward(self, y_pred: torch.Tensor, y_true_returns: torch.Tensor) -> torch.Tensor:
+        # Scale outputs between -1 and 1 for position sizing
+        investment_ratio = torch.tanh(y_pred)
+        
+        # Calculate simulated daily returns
+        simulated_returns = investment_ratio * y_true_returns
+        
+        # Calculate mean and standard deviation across the batch
+        mean_return = torch.mean(simulated_returns)
+        std_return = torch.std(simulated_returns) + self.epsilon
+        
+        # Calculate Sharpe Ratio (annualization multiplier is dropped as it's a constant)
+        sharpe = mean_return / std_return
+        
+        # Maximize Sharpe by minimizing its negative
+        return -sharpe
+
+
 def train_epoch(
     model: nn.Module,
     dataloader: DataLoader,
@@ -37,13 +81,21 @@ def train_epoch(
     total_loss = 0.0
     n_batches = 0
 
-    for X, y in dataloader:
-        X = X.to(device)
-        y = y.to(device)
-
-        optimizer.zero_grad()
-
-        outputs = model(X)
+    for batch in dataloader:
+        # Dynamically unpack based on whether market_features are included
+        if len(batch) == 3:
+            X, m, y = [b.to(device) for b in batch]
+            optimizer.zero_grad()
+            
+            # Check if model supports the market status vector
+            if hasattr(model, 'market_dim') and getattr(model, 'market_dim', 0) > 0:
+                outputs = model(X, m)
+            else:
+                outputs = model(X)
+        else:
+            X, y = [b.to(device) for b in batch]
+            optimizer.zero_grad()
+            outputs = model(X)
 
         if outputs.dim() > 1 and outputs.shape[1] > 1:
             y = y.unsqueeze(1).expand(-1, outputs.shape[1])
@@ -88,11 +140,16 @@ def evaluate(
     all_targets = []
 
     with torch.no_grad():
-        for X, y in dataloader:
-            X = X.to(device)
-            y = y.to(device)
-
-            outputs = model(X)
+        for batch in dataloader:
+            if len(batch) == 3:
+                X, m, y = [b.to(device) for b in batch]
+                if hasattr(model, 'market_dim') and getattr(model, 'market_dim', 0) > 0:
+                    outputs = model(X, m)
+                else:
+                    outputs = model(X)
+            else:
+                X, y = [b.to(device) for b in batch]
+                outputs = model(X)
 
             if outputs.dim() > 1 and outputs.shape[1] > 1:
                 y = y.unsqueeze(1).expand(-1, outputs.shape[1])
@@ -143,7 +200,9 @@ def train_model(
     """
     model = model.to(device)
 
-    criterion = nn.HuberLoss(delta=1.0)
+    # Replaced HuberLoss with the custom profit-driven StockTanhLoss
+    # criterion = StockTanhLoss()
+    criterion = SharpeLoss()
 
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
@@ -221,13 +280,19 @@ def get_predictions(
     all_targets = []
 
     with torch.no_grad():
-        for X, y in dataloader:
-            X = X.to(device)
-
-            outputs = model(X)
+        for batch in dataloader:
+            if len(batch) == 3:
+                X, m, y = [b.to(device) for b in batch]
+                if hasattr(model, 'market_dim') and getattr(model, 'market_dim', 0) > 0:
+                    outputs = model(X, m)
+                else:
+                    outputs = model(X)
+            else:
+                X, y = [b.to(device) for b in batch]
+                outputs = model(X)
 
             all_preds.append(outputs.cpu().numpy())
-            all_targets.append(y.numpy())
+            all_targets.append(y.cpu().numpy())
 
     return np.concatenate(all_preds), np.concatenate(all_targets)
 

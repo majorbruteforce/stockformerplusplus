@@ -54,18 +54,11 @@ class Time2Vec(nn.Module):
 
 
 class Time2VecTransformer(nn.Module):
-    """
-    Enhanced Transformer with Time2Vec layer.
-
-    Architecture:
-        Input features -> Time2Vec -> Concatenate
-        -> LayerNorm -> Input projection -> Positional Encoding
-        -> Transformer Encoder -> Last token -> Linear -> Output
-    """
-
     def __init__(
         self,
         input_dim: int,
+        market_dim: int = 0, # <-- NEW
+        temperature: float = 1.0, # <-- NEW
         t2v_dim: int = 16,
         d_model: int = 128,
         nhead: int = 4,
@@ -78,18 +71,22 @@ class Time2VecTransformer(nn.Module):
         super().__init__()
 
         self.input_dim = input_dim
+        self.market_dim = market_dim
+        self.temperature = temperature
         self.t2v_dim = t2v_dim
         self.d_model = d_model
         self.horizon = horizon
 
+        # --- NEW: Market Gating Projection ---
+        if market_dim > 0:
+            self.gate_proj = nn.Linear(market_dim, input_dim)
+        # -------------------------------------
+
         self.time2vec = Time2Vec(t2v_dim)
-
         self.input_projection = nn.Linear(input_dim + t2v_dim, d_model)
-
         self.layer_norm = nn.LayerNorm(d_model)
-
         self.pos_encoder = PositionalEncodingT2V(d_model, max_len, dropout)
-
+        
         encoder_layer = nn.TransformerEncoderLayer(
             d_model=d_model,
             nhead=nhead,
@@ -98,49 +95,46 @@ class Time2VecTransformer(nn.Module):
             batch_first=True,
             activation="gelu",
         )
-
-        self.transformer_encoder = nn.TransformerEncoder(
-            encoder_layer, num_layers=num_layers
-        )
-
+        self.transformer_encoder = nn.TransformerEncoder(encoder_layer, num_layers=num_layers)
         self.fc_out = nn.Linear(d_model, horizon)
-
         self._init_weights()
 
+    # ... keep _init_weights the same ...
     def _init_weights(self):
+        # Initialize the new gating projection layer if it exists
+        if hasattr(self, 'gate_proj'):
+            nn.init.xavier_uniform_(self.gate_proj.weight)
+            nn.init.zeros_(self.gate_proj.bias)
+            
+        # Initialize original layers
         nn.init.xavier_uniform_(self.input_projection.weight)
         nn.init.zeros_(self.input_projection.bias)
         nn.init.xavier_uniform_(self.fc_out.weight)
         nn.init.zeros_(self.fc_out.bias)
 
-    def forward(self, x: torch.Tensor) -> torch.Tensor:
-        """
-        Args:
-            x: Input tensor of shape (batch, seq_len, input_dim)
-               Must include time indices as last dimension
-
-        Returns:
-            Output tensor of shape (batch, horizon)
-        """
+    def forward(self, x: torch.Tensor, market_status: torch.Tensor = None) -> torch.Tensor:
         batch_size, seq_len, _ = x.shape
 
         features = x[:, :, :-1]
         time_indices = x[:, :, -1:]
 
-        time_embeddings = self.time2vec(time_indices)
+        # --- NEW: Apply Market-Guided Gating ---
+        if self.market_dim > 0 and market_status is not None:
+            gate_weights = self.gate_proj(market_status) 
+            alpha = torch.softmax(gate_weights / self.temperature, dim=-1)
+            alpha = alpha * self.input_dim 
+            features = features * alpha.unsqueeze(1)
+        # ---------------------------------------
 
+        time_embeddings = self.time2vec(time_indices)
         combined = torch.cat([features, time_embeddings], dim=-1)
 
         combined = self.input_projection(combined)
-
         combined = self.layer_norm(combined)
-
         combined = self.pos_encoder(combined)
-
         combined = self.transformer_encoder(combined)
 
         last_token = combined[:, -1, :]
-
         output = self.fc_out(last_token)
 
         return output.squeeze(-1) if self.horizon == 1 else output

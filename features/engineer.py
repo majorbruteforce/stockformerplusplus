@@ -53,6 +53,27 @@ def compute_day_of_week(df: pd.DataFrame) -> pd.DataFrame:
     return dow_dummies
 
 
+def compute_market_status(df: pd.DataFrame, windows: list = [5, 10, 20]) -> pd.DataFrame:
+    """
+    Construct the market status vector (m_tau) as defined in the MASTER paper.
+    Uses rolling averages and standard deviations of returns and volumes.
+    """
+    market_features = pd.DataFrame(index=df.index)
+    log_ret = compute_log_returns(df["adjusted_close"])
+    vol = df["volume"]
+    
+    for w in windows:
+        market_features[f"ret_mean_{w}"] = log_ret.rolling(window=w, min_periods=w).mean()
+        market_features[f"ret_std_{w}"] = log_ret.rolling(window=w, min_periods=w).std()
+        
+        # Log volume to stabilize variance before rolling metrics
+        log_vol = np.log1p(vol)
+        market_features[f"vol_mean_{w}"] = log_vol.rolling(window=w, min_periods=w).mean()
+        market_features[f"vol_std_{w}"] = log_vol.rolling(window=w, min_periods=w).std()
+        
+    return market_features.dropna()
+
+
 def engineer_features(df: pd.DataFrame) -> pd.DataFrame:
     """
     Create all features from raw OHLCV data.
@@ -126,16 +147,11 @@ def create_targets(features: pd.DataFrame, horizons: list = None) -> pd.DataFram
 def split_data(
     features: pd.DataFrame,
     targets: pd.DataFrame,
+    market_features: pd.DataFrame = None, # <-- NEW ARGUMENT
     train_ratio: float = FEATURE_CONFIG["train_ratio"],
     val_ratio: float = FEATURE_CONFIG["val_ratio"],
     test_ratio: float = FEATURE_CONFIG["test_ratio"],
 ) -> Tuple[dict, dict]:
-    """
-    Chronologically split data into train, validation, and test sets.
-
-    Returns:
-        Dictionary with train/val/test splits for features and targets
-    """
     assert abs(train_ratio + val_ratio + test_ratio - 1.0) < 1e-6
 
     n = len(features)
@@ -162,6 +178,14 @@ def split_data(
             "targets": aligned_targets.loc[test_idx],
         },
     }
+    
+    # --- NEW: Inject Market Features into splits ---
+    if market_features is not None:
+        aligned_market = market_features.loc[features.index]
+        data_splits["train"]["market_features"] = aligned_market.loc[train_idx]
+        data_splits["val"]["market_features"] = aligned_market.loc[val_idx]
+        data_splits["test"]["market_features"] = aligned_market.loc[test_idx]
+    # -----------------------------------------------
 
     scalers = {}
     for split in ["train", "val", "test"]:
@@ -170,39 +194,42 @@ def split_data(
     feature_cols = [c for c in features.columns if not c.startswith("dow_")]
     scalers["feature"] = StandardScaler()
     scalers["feature"].fit(data_splits["train"]["features"][feature_cols])
+    
+    # --- NEW: Scale Market Features ---
+    if market_features is not None:
+        scalers["market"] = StandardScaler()
+        scalers["market"].fit(data_splits["train"]["market_features"])
+    # ----------------------------------
 
     for split in ["train", "val", "test"]:
         split_features = data_splits[split]["features"].copy()
-
-        split_features[feature_cols] = scalers["feature"].transform(
-            split_features[feature_cols]
-        )
-
+        split_features[feature_cols] = scalers["feature"].transform(split_features[feature_cols])
         data_splits[split]["features"] = split_features
+        
+        # --- NEW: Apply Market Scaler ---
+        if market_features is not None:
+            split_mkt = data_splits[split]["market_features"].copy()
+            split_mkt[:] = scalers["market"].transform(split_mkt)
+            data_splits[split]["market_features"] = split_mkt
+        # --------------------------------
 
     return data_splits, scalers
 
 
 def prepare_data(df: pd.DataFrame, horizon: int = 1) -> Tuple[dict, dict]:
-    """
-    Full data preparation pipeline.
-
-    Args:
-        df: Raw OHLCV DataFrame
-        horizon: Prediction horizon (1 or 5)
-
-    Returns:
-        data_splits: Dictionary with train/val/test splits
-        scalers: Dictionary with fitted scalers
-    """
     features = engineer_features(df)
+    market_features = compute_market_status(df) # <-- NEW
     targets = create_targets(features, horizons=[horizon])
 
-    common_idx = features.index.intersection(targets.index)
+    # --- NEW: Align indices across all three DataFrames ---
+    common_idx = features.index.intersection(targets.index).intersection(market_features.index)
     features = features.loc[common_idx]
+    market_features = market_features.loc[common_idx]
     targets = targets.loc[common_idx]
+    # ------------------------------------------------------
 
-    data_splits, scalers = split_data(features, targets)
+    # Pass the aligned market_features to split_data
+    data_splits, scalers = split_data(features, targets, market_features=market_features)
 
     print(f"\nData split for horizon={horizon}:")
     print(f"  Train: {len(data_splits['train']['features'])} samples")
@@ -210,7 +237,6 @@ def prepare_data(df: pd.DataFrame, horizon: int = 1) -> Tuple[dict, dict]:
     print(f"  Test:  {len(data_splits['test']['features'])} samples")
 
     return data_splits, scalers
-
 
 if __name__ == "__main__":
     from data.fetcher import load_or_fetch_data
@@ -222,3 +248,66 @@ if __name__ == "__main__":
     print(f"Features shape: {features.shape}")
     print(f"Targets shape: {targets.shape}")
     print(f"\nFeature columns: {features.columns.tolist()}")
+
+
+def generate_walk_forward_splits(
+    features: pd.DataFrame,
+    targets: pd.DataFrame,
+    market_features: pd.DataFrame = None,
+    train_days: int = 1000,
+    val_days: int = 150,
+    step_days: int = 60,
+    seq_len: int = 60, # <-- NEW PARAMETER
+):
+    """
+    Generates rolling windows for walk-forward validation.
+    Includes a lookback overlap (seq_len) for val and test sets.
+    """
+    n = len(features)
+    total_window = train_days + val_days + step_days
+    
+    for start_idx in range(0, n - total_window + 1, step_days):
+        train_end = start_idx + train_days
+        val_end = train_end + val_days
+        test_end = val_end + step_days
+        
+        train_idx = features.index[start_idx:train_end]
+        
+        # --- FIXED: Add 'seq_len' lookback buffer so the dataset can actually form sequences ---
+        val_idx = features.index[train_end - seq_len : val_end]
+        test_idx = features.index[val_end - seq_len : test_end]
+        # --------------------------------------------------------------------------------------
+        
+        aligned_targets = targets.loc[features.index]
+        
+        data_splits = {
+            "train": {"features": features.loc[train_idx], "targets": aligned_targets.loc[train_idx]},
+            "val": {"features": features.loc[val_idx], "targets": aligned_targets.loc[val_idx]},
+            "test": {"features": features.loc[test_idx], "targets": aligned_targets.loc[test_idx]},
+        }
+        
+        if market_features is not None:
+            aligned_market = market_features.loc[features.index]
+            data_splits["train"]["market_features"] = aligned_market.loc[train_idx]
+            data_splits["val"]["market_features"] = aligned_market.loc[val_idx]
+            data_splits["test"]["market_features"] = aligned_market.loc[test_idx]
+            
+        feature_cols = [c for c in features.columns if not c.startswith("dow_")]
+        feature_scaler = StandardScaler()
+        feature_scaler.fit(data_splits["train"]["features"][feature_cols])
+        
+        if market_features is not None:
+            market_scaler = StandardScaler()
+            market_scaler.fit(data_splits["train"]["market_features"])
+            
+        for split in ["train", "val", "test"]:
+            split_features = data_splits[split]["features"].copy()
+            split_features[feature_cols] = feature_scaler.transform(split_features[feature_cols])
+            data_splits[split]["features"] = split_features
+            
+            if market_features is not None:
+                split_mkt = data_splits[split]["market_features"].copy()
+                split_mkt[:] = market_scaler.transform(split_mkt)
+                data_splits[split]["market_features"] = split_mkt
+                
+        yield data_splits

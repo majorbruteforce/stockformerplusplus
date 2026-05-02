@@ -53,6 +53,8 @@ def compute_financial_metrics(
     """
     n = len(predictions)
 
+    position = np.tanh(predictions)
+
     position = np.where(predictions > 0, 1, -1)
 
     raw_returns = position * targets
