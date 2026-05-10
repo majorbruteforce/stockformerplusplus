@@ -24,7 +24,7 @@ def set_seed(seed: int = SEED):
 
 set_seed(SEED)
 
-API_KEY = "A4G119PMOFNFAAVC" #ik
+API_KEY = "A4G119PMOFNFAAVC"  # ik
 SYMBOL = "NVDA"
 
 DATA_CONFIG = {
@@ -71,6 +71,13 @@ MODEL_CONFIG = {
         "dim_feedforward": 256,
         "dropout": 0.1,
         "t2v_dim": 16,
+    },
+    "transformer": {
+        "d_model": 128,
+        "nhead": 4,
+        "num_layers": 4,
+        "dim_feedforward": 256,
+        "dropout": 0.1,
     },
 }
 

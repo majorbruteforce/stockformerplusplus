@@ -1,0 +1,32 @@
+{
+  "Transformer": {
+    "MAE": 0.1718,
+    "RMSE": 0.2518,
+    "R2": -60.29,
+    "Dir_Acc": 50.8,
+    "Sharpe": 0.309,
+    "Cum_Return": 24.3,
+    "MDD": -77.2,
+    "Profit_Factor": 1.06
+  },
+  "Time2Vec": {
+    "MAE": 0.1795,
+    "RMSE": 0.2429,
+    "R2": -56.02,
+    "Dir_Acc": 50.4,
+    "Sharpe": 0.242,
+    "Cum_Return": -5.4,
+    "MDD": -74.7,
+    "Profit_Factor": 1.04
+  },
+  "Gating": {
+    "MAE": 0.1983,
+    "RMSE": 0.2479,
+    "R2": -58.41,
+    "Dir_Acc": 50.0,
+    "Sharpe": -0.299,
+    "Cum_Return": -89.6,
+    "MDD": -94.0,
+    "Profit_Factor": 0.95
+  }
+}

@@ -11,6 +11,7 @@ from torch.optim.lr_scheduler import ReduceLROnPlateau
 from typing import Tuple, Optional, Dict, Any
 from tqdm import tqdm
 from config import TRAIN_CONFIG, DEVICE
+from utils.mse_loss import MSELoss
 
 
 # class StockTanhLoss(nn.Module):
@@ -28,31 +29,35 @@ from config import TRAIN_CONFIG, DEVICE
 #         # Maximize returns by minimizing the negative mean
 #         return -torch.mean(simulated_returns)
 
+
 class SharpeLoss(nn.Module):
     """
     Optimizes directly for the Sharpe Ratio.
-    Forces the model to maximize returns while minimizing volatility, 
+    Forces the model to maximize returns while minimizing volatility,
     preventing 'perma-bull' mode collapse on assets with upward drift.
     """
+
     def __init__(self, epsilon=1e-6):
         super().__init__()
         # Epsilon prevents division by zero
         self.epsilon = epsilon
 
-    def forward(self, y_pred: torch.Tensor, y_true_returns: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, y_pred: torch.Tensor, y_true_returns: torch.Tensor
+    ) -> torch.Tensor:
         # Scale outputs between -1 and 1 for position sizing
         investment_ratio = torch.tanh(y_pred)
-        
+
         # Calculate simulated daily returns
         simulated_returns = investment_ratio * y_true_returns
-        
+
         # Calculate mean and standard deviation across the batch
         mean_return = torch.mean(simulated_returns)
         std_return = torch.std(simulated_returns) + self.epsilon
-        
+
         # Calculate Sharpe Ratio (annualization multiplier is dropped as it's a constant)
         sharpe = mean_return / std_return
-        
+
         # Maximize Sharpe by minimizing its negative
         return -sharpe
 
@@ -86,9 +91,9 @@ def train_epoch(
         if len(batch) == 3:
             X, m, y = [b.to(device) for b in batch]
             optimizer.zero_grad()
-            
+
             # Check if model supports the market status vector
-            if hasattr(model, 'market_dim') and getattr(model, 'market_dim', 0) > 0:
+            if hasattr(model, "market_dim") and getattr(model, "market_dim", 0) > 0:
                 outputs = model(X, m)
             else:
                 outputs = model(X)
@@ -143,7 +148,7 @@ def evaluate(
         for batch in dataloader:
             if len(batch) == 3:
                 X, m, y = [b.to(device) for b in batch]
-                if hasattr(model, 'market_dim') and getattr(model, 'market_dim', 0) > 0:
+                if hasattr(model, "market_dim") and getattr(model, "market_dim", 0) > 0:
                     outputs = model(X, m)
                 else:
                     outputs = model(X)
@@ -179,6 +184,7 @@ def train_model(
     min_delta: float = TRAIN_CONFIG["min_delta"],
     device: torch.device = DEVICE,
     verbose: bool = True,
+    loss_type: str = "mse",
 ) -> Dict[str, Any]:
     """
     Full training loop with early stopping and learning rate scheduling.
@@ -194,21 +200,21 @@ def train_model(
         min_delta: Minimum change to qualify as improvement
         device: Device to train on
         verbose: Print progress
+        loss_type: "mse" or "sharpe"
 
     Returns:
         Dictionary with training history
     """
     model = model.to(device)
 
-    # Replaced HuberLoss with the custom profit-driven StockTanhLoss
-    # criterion = StockTanhLoss()
-    criterion = SharpeLoss()
+    if loss_type == "sharpe":
+        criterion = SharpeLoss()
+    else:
+        criterion = MSELoss()
 
     optimizer = AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
 
-    scheduler = ReduceLROnPlateau(
-        optimizer, mode="min", factor=0.5, patience=5
-    )
+    scheduler = ReduceLROnPlateau(optimizer, mode="min", factor=0.5, patience=5)
 
     best_val_loss = float("inf")
     best_model_state = None
@@ -283,7 +289,7 @@ def get_predictions(
         for batch in dataloader:
             if len(batch) == 3:
                 X, m, y = [b.to(device) for b in batch]
-                if hasattr(model, 'market_dim') and getattr(model, 'market_dim', 0) > 0:
+                if hasattr(model, "market_dim") and getattr(model, "market_dim", 0) > 0:
                     outputs = model(X, m)
                 else:
                     outputs = model(X)

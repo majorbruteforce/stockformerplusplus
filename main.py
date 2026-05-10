@@ -31,7 +31,14 @@ from utils.plotting import plot_all_results
 from models.rnn_lstm import RNNModel, LSTMModel
 from models.stockformer import Stockformer
 from models.time2vec_transformer import Time2VecTransformer
-from features.engineer import prepare_data, engineer_features, create_targets, compute_market_status, generate_walk_forward_splits
+from features.engineer import (
+    prepare_data,
+    engineer_features,
+    create_targets,
+    compute_market_status,
+    generate_walk_forward_splits,
+)
+
 
 def prepare_dataloaders(
     data_splits: Dict,
@@ -46,15 +53,27 @@ def prepare_dataloaders(
     target_col = f"target_h{horizon}"
 
     # --- NEW: Safely extract market features if they exist ---
-    train_market = data_splits["train"]["market_features"].values if "market_features" in data_splits["train"] else None
-    val_market = data_splits["val"]["market_features"].values if "market_features" in data_splits["val"] else None
-    test_market = data_splits["test"]["market_features"].values if "market_features" in data_splits["test"] else None
+    train_market = (
+        data_splits["train"]["market_features"].values
+        if "market_features" in data_splits["train"]
+        else None
+    )
+    val_market = (
+        data_splits["val"]["market_features"].values
+        if "market_features" in data_splits["val"]
+        else None
+    )
+    test_market = (
+        data_splits["test"]["market_features"].values
+        if "market_features" in data_splits["test"]
+        else None
+    )
     # ---------------------------------------------------------
 
     train_dataset = TimeSeriesDataset(
         features=data_splits["train"]["features"].values,
         targets=data_splits["train"]["targets"][target_col].values,
-        market_features=train_market, # <-- NEW
+        market_features=train_market,  # <-- NEW
         seq_len=seq_len,
         include_time=include_time,
     )
@@ -62,7 +81,7 @@ def prepare_dataloaders(
     val_dataset = TimeSeriesDataset(
         features=data_splits["val"]["features"].values,
         targets=data_splits["val"]["targets"][target_col].values,
-        market_features=val_market, # <-- NEW
+        market_features=val_market,  # <-- NEW
         seq_len=seq_len,
         include_time=include_time,
     )
@@ -70,7 +89,7 @@ def prepare_dataloaders(
     test_dataset = TimeSeriesDataset(
         features=data_splits["test"]["features"].values,
         targets=data_splits["test"]["targets"][target_col].values,
-        market_features=test_market, # <-- NEW
+        market_features=test_market,  # <-- NEW
         seq_len=seq_len,
         include_time=include_time,
     )
@@ -83,7 +102,11 @@ def prepare_dataloaders(
 
 
 def create_model(
-    model_name: str, input_dim: int, horizon: int, include_time: bool = False, market_dim: int = 0
+    model_name: str,
+    input_dim: int,
+    horizon: int,
+    include_time: bool = False,
+    market_dim: int = 0,
 ) -> torch.nn.Module:
     """
     Factory function to create model by name.
@@ -119,8 +142,18 @@ def create_model(
     elif model_name == "time2vec_transformer":
         model = Time2VecTransformer(
             input_dim=input_dim,
-            market_dim=market_dim, # <-- NEW
+            market_dim=market_dim,  # <-- NEW
             t2v_dim=cfg["t2v_dim"],
+            d_model=cfg["d_model"],
+            nhead=cfg["nhead"],
+            num_layers=cfg["num_layers"],
+            dim_feedforward=cfg["dim_feedforward"],
+            dropout=cfg["dropout"],
+            horizon=horizon,
+        )
+    elif model_name == "transformer":
+        model = Stockformer(
+            input_dim=input_dim,
             d_model=cfg["d_model"],
             nhead=cfg["nhead"],
             num_layers=cfg["num_layers"],
@@ -142,10 +175,10 @@ def train_and_evaluate_model(
     horizon: int,
     input_dim: int,
     include_time: bool = False,
-    market_dim: int = 0, # <-- NEW
+    market_dim: int = 0,  # <-- NEW
     verbose: bool = True,
 ) -> Tuple[Dict[str, float], Dict[str, Any]]:
-    
+
     if verbose:
         print(f"\n{'=' * 60}")
         print(f"Training {model_name} (horizon={horizon})")
@@ -306,6 +339,7 @@ def train_and_evaluate_model(
 
 #     return results, histories, all_predictions
 
+
 def run_benchmark(horizon: int = 1):
     print(f"\n{'#' * 70}")
     print(f"# Stockformer+ Walk-Forward Benchmark (Horizon = {horizon})")
@@ -313,21 +347,23 @@ def run_benchmark(horizon: int = 1):
 
     print("\n[1/5] Loading and Aligning Global Data...")
     df = load_or_fetch_data()
-    
+
     # Generate full unbroken timelines for features, market state, and targets
     features = engineer_features(df)
     market_features = compute_market_status(df)
     targets = create_targets(features, horizons=[horizon])
-    
+
     # Intersect so we have perfectly aligned dates across all dataframes
-    common_idx = features.index.intersection(targets.index).intersection(market_features.index)
+    common_idx = features.index.intersection(targets.index).intersection(
+        market_features.index
+    )
     features = features.loc[common_idx]
     market_features = market_features.loc[common_idx]
     targets = targets.loc[common_idx]
 
     input_dim = features.shape[1]
     market_dim = market_features.shape[1]
-    
+
     print(f"Input dimension: {input_dim} | Market dimension: {market_dim}")
     print(f"Total available trading days: {len(features)}")
 
@@ -344,64 +380,77 @@ def run_benchmark(horizon: int = 1):
         print(f"Training {model_name.upper()}")
         print(f"{'=' * 60}")
 
-        include_time = (model_name == "time2vec_transformer")
-        
-        # 1. Initialize the model ONCE.
-        # It will continuously fine-tune its weights as it walks forward through time.
-        model = create_model(model_name, input_dim, horizon, include_time, market_dim)
-        
+        include_time = model_name == "time2vec_transformer"
+
         fold_predictions = []
         fold_targets = []
         model_history = {"train_loss": [], "val_loss": [], "lr": []}
-        
-       # 2. Spin up the rolling window generator
+
+        # 1. Spin up the rolling window generator
         splits_generator = generate_walk_forward_splits(
-            features, targets, market_features, 
-            train_days=1000, val_days=150, step_days=60,
-            seq_len=FEATURE_CONFIG["seq_len"] # <-- ADD THIS LINE
+            features,
+            targets,
+            market_features,
+            train_days=1000,
+            val_days=150,
+            step_days=60,
+            seq_len=FEATURE_CONFIG["seq_len"],
         )
-        
+
+        # 2. Initialize model FRESH for each fold to avoid temporal leakage
         for fold, data_splits in enumerate(splits_generator):
+            # Create fresh model for each fold - no weight carryover from previous folds
+            model = create_model(
+                model_name, input_dim, horizon, include_time, market_dim
+            )
+
             train_loader, val_loader, test_loader = prepare_dataloaders(
                 data_splits, horizon, include_time=include_time
             )
-            
-            # Train/Fine-tune on this specific window (verbose=False to keep console clean)
+
+            # Train from scratch on this window (verbose=False to keep console clean)
             history = train_model(
-                model, train_loader, val_loader, 
-                epochs=TRAIN_CONFIG["epochs"], 
-                device=DEVICE, verbose=False
+                model,
+                train_loader,
+                val_loader,
+                epochs=TRAIN_CONFIG["epochs"],
+                device=DEVICE,
+                verbose=False,
             )
-            
+
             # Predict the subsequent 60 unknown days
             preds, targs = get_predictions(model, test_loader, DEVICE)
             if preds.ndim > 1 and preds.shape[1] > 1:
                 preds = preds[:, 0]
-                
+
             fold_predictions.append(preds)
             fold_targets.append(targs)
-            
+
             model_history["train_loss"].extend(history["train_loss"])
             model_history["val_loss"].extend(history["val_loss"])
-            
-            print(f"  Fold {fold + 1} (60-day step) | Best Val Loss: {history['best_val_loss']:.6f}")
+
+            print(
+                f"  Fold {fold + 1} (60-day step) | Best Val Loss: {history['best_val_loss']:.6f}"
+            )
 
         # 3. Stitch all the 60-day steps together to evaluate the total multi-year journey
         final_preds = np.concatenate(fold_predictions)
         final_targets = np.concatenate(fold_targets)
-        
+
         # Save master targets for the plotter (only need to do this once)
         if test_targets_master is None:
             test_targets_master = final_targets
-            
+
         metrics = compute_all_metrics(final_preds, final_targets)
-        
+
         results[model_name] = metrics
         histories[model_name] = model_history
         all_predictions[model_name] = final_preds
 
         print(f"\n{model_name.upper()} Total Backtest Results:")
-        print(f"  Dir Acc: {metrics['Dir_Acc']:.2f}% | Sharpe: {metrics['Sharpe']:.4f} | Cum Return: {metrics['Cum_Return']:.2f}%")
+        print(
+            f"  Dir Acc: {metrics['Dir_Acc']:.2f}% | Sharpe: {metrics['Sharpe']:.4f} | Cum Return: {metrics['Cum_Return']:.2f}%"
+        )
 
     print("\n[5/5] Generating plots and saving results...")
     os.makedirs(RESULT_DIR, exist_ok=True)
@@ -432,6 +481,165 @@ def run_benchmark(horizon: int = 1):
 
     return results, histories, all_predictions
 
+
+def run_ablation_experiment(
+    model_name: str,
+    features: pd.DataFrame,
+    targets: pd.DataFrame,
+    market_features: pd.DataFrame,
+    input_dim: int,
+    market_dim: int,
+    horizon: int,
+    result_dir: str,
+) -> Tuple[Dict, Dict, np.ndarray]:
+    """Run a single model ablation experiment."""
+    print(f"\n{'=' * 60}")
+    print(f"Ablation: {model_name}")
+    print(f"{'=' * 60}")
+
+    include_time = ("t2v" in model_name) or ("time2vec" in model_name)
+
+    fold_predictions = []
+    fold_targets = []
+    model_history = {"train_loss": [], "val_loss": [], "lr": []}
+
+    splits_generator = generate_walk_forward_splits(
+        features,
+        targets,
+        market_features,
+        train_days=1000,
+        val_days=150,
+        step_days=60,
+        seq_len=FEATURE_CONFIG["seq_len"],
+    )
+
+    for fold, data_splits in enumerate(splits_generator):
+        model = create_model(model_name, input_dim, horizon, include_time, market_dim)
+
+        train_loader, val_loader, test_loader = prepare_dataloaders(
+            data_splits, horizon, include_time=include_time
+        )
+
+        history = train_model(
+            model,
+            train_loader,
+            val_loader,
+            epochs=TRAIN_CONFIG["epochs"],
+            device=DEVICE,
+            verbose=False,
+        )
+
+        preds, targs = get_predictions(model, test_loader, DEVICE)
+        if preds.ndim > 1 and preds.shape[1] > 1:
+            preds = preds[:, 0]
+
+        fold_predictions.append(preds)
+        fold_targets.append(targs)
+
+        model_history["train_loss"].extend(history["train_loss"])
+        model_history["val_loss"].extend(history["val_loss"])
+
+        print(f"  Fold {fold + 1} | Best Val Loss: {history['best_val_loss']:.6f}")
+
+    final_preds = np.concatenate(fold_predictions)
+    final_targets = np.concatenate(fold_targets)
+
+    metrics = compute_all_metrics(final_preds, final_targets)
+
+    print(f"\n{model_name} Results:")
+    print(
+        f"  Dir Acc: {metrics['Dir_Acc']:.2f}% | Sharpe: {metrics['Sharpe']:.4f} | Cum Return: {metrics['Cum_Return']:.2f}%"
+    )
+
+    return metrics, model_history, final_preds, final_targets
+
+
+def run_full_ablation(horizon: int = 1):
+    """Run complete ablation study."""
+    print(f"\n{'#' * 70}")
+    print(f"# Stockformer++ Ablation Study (Horizon = {horizon})")
+    print(f"{'#' * 70}")
+
+    print("\n[1/4] Loading data...")
+    df = load_or_fetch_data()
+
+    features = engineer_features(df)
+    market_features = compute_market_status(df)
+    targets = create_targets(features, horizons=[horizon])
+
+    common_idx = features.index.intersection(targets.index).intersection(
+        market_features.index
+    )
+    features = features.loc[common_idx]
+    market_features = market_features.loc[common_idx]
+    targets = targets.loc[common_idx]
+
+    input_dim = features.shape[1]
+    market_dim = market_features.shape[1]
+
+    print(f"Input dimension: {input_dim} | Market dimension: {market_dim}")
+    print(f"Total trading days: {len(features)}")
+
+    ablation_models = [
+        "transformer",  # Transformer baseline (no Time2Vec)
+        "time2vec_transformer",  # + Time2Vec
+    ]
+
+    if "--full" in sys.argv:
+        ablation_models = [
+            "transformer",
+            "time2vec_transformer",
+        ]
+
+    results = {}
+    histories = {}
+    all_predictions = {}
+
+    print("\n[2/4] Running ablation experiments...")
+
+    for model_name in ablation_models:
+        metrics, history, preds, targets_arr = run_ablation_experiment(
+            model_name,
+            features,
+            targets,
+            market_features,
+            input_dim,
+            market_dim,
+            horizon,
+            RESULT_DIR,
+        )
+        results[model_name] = metrics
+        histories[model_name] = history
+        all_predictions[model_name] = preds
+
+    print("\n[3/4] Saving results...")
+    os.makedirs(RESULT_DIR, exist_ok=True)
+
+    results_path = os.path.join(RESULT_DIR, f"ablation_results_h{horizon}.json")
+    results_serializable = {
+        k: {kk: float(vv) for kk, vv in v.items()} for k, v in results.items()
+    }
+    with open(results_path, "w") as f:
+        json.dump(results_serializable, f, indent=2)
+
+    print("\n[4/4] Generating plots...")
+    plot_all_results(
+        all_predictions,
+        {f"h{horizon}": targets_arr},
+        histories,
+        results,
+        horizon,
+        RESULT_DIR,
+    )
+
+    print("\n" + "=" * 70)
+    print("ABLATION RESULTS")
+    print("=" * 70)
+    print(format_metrics_table(results))
+
+    return results, histories, all_predictions
+
+
 def main():
     """Main entry point."""
     config.set_seed(config.SEED)
@@ -439,6 +647,12 @@ def main():
     print(f"Device: {DEVICE}")
     print(f"Python version: {sys.version}")
     print(f"PyTorch version: {torch.__version__}")
+
+    if "--ablation" in sys.argv:
+        horizons = FEATURE_CONFIG["horizons"]
+        for h in horizons:
+            run_full_ablation(horizon=h)
+        return
 
     horizons = FEATURE_CONFIG["horizons"]
 

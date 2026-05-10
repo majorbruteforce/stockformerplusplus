@@ -59,7 +59,7 @@ def plot_equity_curve(
     """
     Plot equity curve for trading strategy.
     """
-    position = np.tanh(predictions)
+    position = np.where(predictions > 0, 1, -1)
 
     raw_returns = position * targets
 
@@ -104,7 +104,7 @@ def plot_drawdown(
     """
     Plot drawdown curve.
     """
-    position = np.tanh(predictions)
+    position = np.where(predictions > 0, 1, -1)
 
     raw_returns = position * targets
     net_costs = np.abs(np.diff(np.concatenate([[0], position]))) * transaction_cost
