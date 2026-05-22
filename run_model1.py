@@ -19,7 +19,8 @@ from features.engineer import (
     generate_walk_forward_splits,
 )
 from utils.dataset import TimeSeriesDataset
-from utils.training import train_model, get_predictions
+from util
+s.training import train_model, get_predictions
 from utils.metrics import compute_all_metrics
 from main import create_model
 from torch.utils.data import DataLoader
@@ -85,7 +86,7 @@ for fold_data in splits_gen:
         model,
         train_loader,
         val_loader,
-        epochs=5,
+        epochs=100,
         device=DEVICE,
         verbose=False,
         loss_type="mse",
